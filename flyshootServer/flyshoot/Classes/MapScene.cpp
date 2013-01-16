@@ -1,0 +1,1459 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+#include<pthread.h>
+#include "MapScene.h"
+#include "CCMutableDictionary.h"
+#include "GamePlayer.h"
+#include "PacketInfo.h"
+#include "StartScene.h"
+#include "Bullettype.h"
+#include "SimpleAudioEngine.h"
+#include <math.h>
+#ifndef WIN32
+#include <unistd.h>
+#endif
+#define MUSIC_FILE		"background.mp3"
+#define EFFECT_FILE		"effect1.wav"
+#define BULLET_FIRE     "bullet.wav"
+#define BOMB_FIRE       "bomb.wav"
+#define ICE_FIRE		"ice.wav"
+#define RELEASE_FIRE	"release.wav"
+#define BIGBANG			"bang.wav"
+#define MOVE_EFFECT		"move.wav"
+#define TIME_OUT_TIME 20 
+#define PI 3.1415926
+#define ISSERVER true
+extern bool isMusicOn;
+extern bool isEffectOn ;
+bool isPmode = false;
+using namespace cocos2d;
+CCPoint unit(CCPoint vt);
+float   vectorLength(CCPoint vt);
+bool nearPoint(CCPoint start, CCPoint end, float len);
+
+enum 
+{
+	kTagTileMap = 1,
+};
+CCScene* MapScene::scene(char type,  std::string hostip)
+{
+    CCScene * scene = NULL;
+    do 
+    {
+        // 'scene' is an autorelease object
+        scene = CCScene::node();
+        CC_BREAK_IF(! scene);
+		
+        // 'layer' is an autorelease object
+        MapScene *layer = MapScene::node();
+       	CC_BREAK_IF(! layer);
+		if (type == 'S')
+		{
+			layer->startServer();
+		}
+		if (type == 'C')
+		{
+			layer->startClient(hostip);
+		}
+		if (type == 'P')
+		{
+			layer->startPractice();
+		}
+        // add layer as a child to scene
+        scene->addChild(layer);
+    } while (0);
+    CCDirector::sharedDirector()->setDeviceOrientation(CCDeviceOrientationPortrait);
+    // return the scene
+    return scene;
+}
+MapScene::~MapScene(void)
+{
+	start = false;
+	if (cSocketR != INVALID_SOCKET)
+	{
+		cSocketR.Close();
+		cSocketR.Clean();
+	}
+	if (cSocketW != INVALID_SOCKET)
+	{
+		cSocketW.Close();
+		cSocketW.Clean();
+	}
+	if (mysocketR != INVALID_SOCKET)
+	{
+		mysocketR.Close();
+		mysocketR.Clean();
+	}
+	if (mysocketW != INVALID_SOCKET)
+	{
+		mysocketW.Close();
+		mysocketW.Clean();
+	}
+}
+// on "init" you need to initialize your instance
+bool MapScene::init()
+{
+	player = new GamePlayer("rplayer.png");
+	isPmode = false;
+	if (ISSERVER)
+		id = 0 ;
+	else
+		id = 1;
+	status = true;
+	weaponType = NORMAL_BULLET;
+	
+	maplayer1 = CCSprite::spriteWithFile("background.png");
+    maplayer2 = CCSprite::spriteWithFile("background.png");
+	for (int i = 1; i <= LIFENUM; ++i)
+	{
+		life[i] = CCSprite::spriteWithFile("glife.png");
+		life[i]->setPosition(ccp(4+8*(i-1),475));
+		this->addChild(life[i],1,330+i);
+	}
+	board = CCSprite::spriteWithFile("youwin.png");
+	board->setPosition(ccp(395,290));
+	board->setIsVisible(false);
+	this->addChild(board, 2, 701);
+	weapon[1] = CCSprite::spriteWithFile("w1.png");
+	weapon[2] = CCSprite::spriteWithFile("w2.png");
+	weapon[3] = CCSprite::spriteWithFile("w3.png");
+	weapon[1]->setPosition(ccp(665,455));
+	weapon[2]->setPosition(ccp(715,455));
+	weapon[3]->setPosition(ccp(765,455));
+	this->addChild(weapon[1],2,303);
+	this->addChild(weapon[2],2,304);
+	this->addChild(weapon[3],2,305);
+	rocket = CCSprite::spriteWithFile("rocket.png");
+	rocket->setPosition(ccp(765,255));
+	this->addChild(rocket, 2, 306);
+	CCActionInterval*  action = CCBlink::actionWithDuration(5000, 10000);
+	weapon[1]->runAction(action);
+	spRocker=CCSprite::spriteWithFile("CloseSelected.png");//摇杆 
+	spRockerBG=CCSprite::spriteWithFile("rockerBg.png");//摇杆背景 
+	rocker=HRocker::HRockerWithCenter(ccp(70.0f,80.0f),70.0f ,spRocker ,spRockerBG,false);//创建摇杆 
+	spRocker1=CCSprite::spriteWithFile("CloseSelected.png");//摇杆 
+	spRockerBG1=CCSprite::spriteWithFile("rockerBg.png");//摇杆背景 
+	rocker1=HRocker::HRockerWithCenter(ccp(720.0f,80.0f),70.0f ,spRocker1 ,spRockerBG1,false);//创建摇杆
+	this->addChild(rocker,2, 401);//摇杆添加到layer中 
+	this->addChild(rocker1,2, 402);
+	playerlife = 3;
+	CCSize size = CCDirector::sharedDirector()->getWinSize();
+	maplayer1->setAnchorPoint(ccp(0,0));
+	maplayer2->setAnchorPoint(ccp(0,0));
+	maplayer1->setPosition( ccp(0,0) );
+	maplayer2->setPosition( ccp(0,512) );
+	this->addChild(maplayer1, 0 ,1);
+	this->addChild(maplayer2, 0 ,2);
+	//开启avatart
+	//enemy->setPosition(ccp(122,400));
+	this->addChild((player->getsprite()),2,0);
+	
+	//this->addChild((player->getstreak()),1);
+	
+	//开启avatar
+	for (int i = 0 ; i < MAX; ++i)
+	{
+		avatar[i] = new GamePlayer("rplayer.png");
+		avatar[i]->setPosition(ccp(100+rand() %200,200 + rand() % 100));
+		avatar[i]->getsprite()->setIsVisible(false);
+		this->addChild(avatar[i]->getsprite(), 2, 5+i);
+	}
+	for(int j = 0 ; j < MAX; ++j)
+	{
+		avatarBullets[j][NORMAL_BULLET] = CCArray::arrayWithCapacity(12);
+		for(int i = 0;i < avatarBullets[j][NORMAL_BULLET]->capacity();i++){
+		   GameBullet * mybullet = new GameBullet(NORMAL_BULLET);
+		   (mybullet->getsprite())->setIsVisible(false);
+		   this->addChild((mybullet->getsprite()), 500 + j * 20 + i);
+	   		avatarBullets[j][NORMAL_BULLET]->addObject(mybullet);
+		}
+
+		avatarBullets[j][NORMAL_BULLET]->retain();
+
+		avatarBullets[j][BOMB_BULLET] = CCArray::arrayWithCapacity(1);
+		for(int i = 0;i < avatarBullets[j][BOMB_BULLET]->capacity();i++){
+		   GameBullet * mybullet = new GameBullet(BOMB_BULLET);
+		   (mybullet->getsprite())->setIsVisible(false);
+		   this->addChild((mybullet->getsprite()), 500 + j * 20 + i);
+	   		avatarBullets[j][BOMB_BULLET]->addObject(mybullet);
+		}
+
+		avatarBullets[j][BOMB_BULLET]->retain();
+
+
+		avatarBullets[j][FROZEN_BULLET] = CCArray::arrayWithCapacity(1);
+		for(int i = 0;i < avatarBullets[j][FROZEN_BULLET]->capacity();i++){
+		   GameBullet * mybullet = new GameBullet(FROZEN_BULLET);
+		   (mybullet->getsprite())->setIsVisible(false);
+		   this->addChild((mybullet->getsprite()), 500 + j * 20 + i);
+	   		avatarBullets[j][FROZEN_BULLET]->addObject(mybullet);
+			}
+		avatarBullets[j][FROZEN_BULLET]->retain();
+	}
+	
+	m_emitter = new CCParticleSystemQuad();
+    m_emitter->setIsVisible(false);
+	this->addChild(m_emitter, 10);
+	m_emitter1 = new CCParticleSystemQuad();
+    m_emitter1->setIsVisible(false);
+	this->addChild(m_emitter1, 11);
+	setIsTouchEnabled(true);
+	scheduleUpdate();
+	stepindex = -1;
+	
+	bullets[NORMAL_BULLET] = CCArray::arrayWithCapacity(12);
+	for(int i = 0;i < bullets[NORMAL_BULLET]->capacity();i++){
+	   GameBullet * mybullet = new GameBullet(NORMAL_BULLET);
+	   (mybullet->getsprite())->setIsVisible(false);
+	   this->addChild((mybullet->getsprite()), 200 + i);
+	   	bullets[NORMAL_BULLET]->addObject(mybullet);
+	}
+
+	bullets[NORMAL_BULLET]->retain();
+
+	bullets[BOMB_BULLET] = CCArray::arrayWithCapacity(1);
+	for(int i = 0;i < bullets[BOMB_BULLET]->capacity();i++){
+	   GameBullet * mybullet = new GameBullet(BOMB_BULLET);
+	   (mybullet->getsprite())->setIsVisible(false);
+	   this->addChild((mybullet->getsprite()), 220 + i);
+	   	bullets[BOMB_BULLET]->addObject(mybullet);
+	}
+
+	bullets[BOMB_BULLET]->retain();
+
+
+	bullets[FROZEN_BULLET] = CCArray::arrayWithCapacity(1);
+	for(int i = 0;i < bullets[FROZEN_BULLET]->capacity();i++){
+	   GameBullet * mybullet = new GameBullet(FROZEN_BULLET);
+	   (mybullet->getsprite())->setIsVisible(false);
+	   this->addChild((mybullet->getsprite()), 230 + i);
+	   	bullets[FROZEN_BULLET]->addObject(mybullet);
+	}
+
+	bullets[FROZEN_BULLET]->retain();
+	
+	m_isStop = false;
+	isreduce = false;
+	serverLite = CCSprite::spriteWithFile("server.png");
+	serverLite->setPosition(ccp(300,420));
+	serverLite->setIsVisible(false);
+	this->addChild(serverLite, 2, 801);
+	clientLite = CCSprite::spriteWithFile("client.png");
+	clientLite->setPosition(ccp(500,420));
+	clientLite->setIsVisible(false);
+	this->addChild(clientLite,2,802);
+	leaveBtn = CCSprite::spriteWithFile("leave.png");
+	leaveBtn->setPosition(ccp(400,50));
+	leaveBtn->setIsVisible(false);
+	this->addChild(leaveBtn,2,903);
+	ip = "127.0.0.1";
+	socketAlive = true;
+	heartBeat = true;
+	portR = 12479;
+	portW = 12481;
+	start = false;
+	avatarLife = LIFENUM;
+	this->setIsKeypadEnabled(true);
+	//预载入音乐
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->preloadBackgroundMusic( CCFileUtils::fullPathFromRelativePath(MUSIC_FILE) );
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->preloadEffect( CCFileUtils::fullPathFromRelativePath(BULLET_FIRE));
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->preloadEffect( CCFileUtils::fullPathFromRelativePath(BOMB_FIRE) );
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->preloadEffect( CCFileUtils::fullPathFromRelativePath(RELEASE_FIRE) );
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->preloadEffect( CCFileUtils::fullPathFromRelativePath(BIGBANG) );
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->preloadEffect( CCFileUtils::fullPathFromRelativePath(MOVE_EFFECT));
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->preloadEffect( CCFileUtils::fullPathFromRelativePath(ICE_FIRE));
+	if(isMusicOn)
+	{
+	   CocosDenshion::SimpleAudioEngine::sharedEngine()->playBackgroundMusic(std::string(CCFileUtils::fullPathFromRelativePath(MUSIC_FILE)).c_str(), true);
+	}
+	else
+	{
+		CocosDenshion::SimpleAudioEngine::sharedEngine()->stopBackgroundMusic();
+	}
+    return true;
+}
+
+void MapScene::reduceLife(int num)
+{
+	(player->getsprite())->stopAllActions();
+
+	/*switch(playerlife){
+	case 3:
+	   life1->setIsVisible(false);
+       playerlife --;
+	   break;
+	case 2:
+	   life2->setIsVisible(false);
+       playerlife --;
+	   break;
+	case 1:
+	   life3->setIsVisible(false);
+       playerlife --;
+	   break;
+	}*/
+	if(player->life-num == 5)
+	{
+	
+	}
+	CCActionInterval*  action = CCRotateBy::actionWithDuration(0.05, 15);
+	(player->getsprite())->runAction(CCSequence::actions(action, action->reverse(), NULL));
+	//这里还需要加入对frozen状态的判断此时不无敌，即reduce=false;
+	//schedule(schedule_selector(MapScene::resetreduce), 0.2f);
+	//isreduce = true;
+}
+void MapScene::attackByBomb(ccTime dt)
+{
+		unschedule(schedule_selector(MapScene::attackByBomb));
+		if(isEffectOn)	
+			CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(BIGBANG)).c_str());
+		m_emitter1->initWithFile("ExplodingRing.plist");
+		m_emitter1->setIsVisible(true);
+		m_emitter1->setPosition((player->getsprite())->getPosition());
+
+}
+void MapScene::lose()
+{
+	status = false;
+	isPmode = false;
+	//start = false;
+	unschedule(schedule_selector(MapScene::resettouch));
+
+	for (int i = 0; i < MAX; ++i)
+	{
+		if (avatar[i]->getsprite()->getIsVisible())
+		{
+			//avatar[i]->getsprite()->setIsVisible(false);
+		}
+		for (int j = 0; j <= 2; ++j)
+			for(int k = 0 ; k < avatarBullets[i][j]->capacity(); ++k)
+		{
+			GameBullet *mybullet= (GameBullet *)(avatarBullets[i][j]->objectAtIndex(k));
+			if (mybullet->getsprite()->getIsVisible())
+				mybullet->getsprite()->setIsVisible(false);
+		}
+	}
+	player->getsprite()->setIsVisible(false);
+	if(isEffectOn)	
+		CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(BIGBANG)).c_str());
+    m_emitter->initWithFile("ExplodingRing.plist");
+	m_emitter->setIsVisible(true);
+	m_emitter->setPosition((player->getsprite())->getPosition());
+	if (!board->getIsVisible())
+	{
+		board->initWithFile("youlose.png");
+		board->setIsVisible(true);
+		leaveBtn->setIsVisible(true);
+	}
+	
+}
+void MapScene::win()
+{
+	//start = false;
+	unschedule(schedule_selector(MapScene::resettouch));
+	//player->getsprite()->setIsVisible(false);	
+	for (int i = 0; i < MAX; ++i)
+	{
+		if (avatar[i]->getsprite()->getIsVisible())
+		{
+			avatar[i]->getsprite()->setIsVisible(false);		
+			if(isEffectOn)	
+			CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(BIGBANG)).c_str());
+			m_emitter->initWithFile("ExplodingRing.plist");
+			m_emitter->setIsVisible(true);
+			m_emitter->setPosition(( avatar[i]->getsprite())->getPosition());	
+		}
+		for (int j = 0; j <= 2; ++j)
+			for(int k = 0 ; k < avatarBullets[i][j]->capacity(); ++k)
+		{
+			GameBullet *mybullet= (GameBullet *)(bullets[j]->objectAtIndex(k));
+			if (mybullet->getsprite()->getIsVisible())
+				mybullet->getsprite()->setIsVisible(false);
+		}
+	}
+	if (!board->getIsVisible())
+	{
+		board->setIsVisible(true);
+		leaveBtn->setIsVisible(true);
+	}
+}
+void MapScene::syncLife(ccTime dt)
+{
+	unschedule(schedule_selector(MapScene::syncLife));
+	if (player->life < 0)
+		return ;
+	for (int i = LIFENUM; i > player->life ; --i)
+	{
+		if (life[i]->getIsVisible())
+		{
+			life[i]->setIsVisible(false);
+		}
+	}
+	if (player->life < 10)
+	{
+		for (int i =1 ; i <= player->life; ++i)
+		{
+			life[i]->initWithFile("rlife.png");
+		}
+	}
+	else if (player->life < 24)
+		{
+			for (int i = 1 ; i <=player->life; ++i)
+			{
+				life[i]->initWithFile("ylife.png");
+			}
+		};
+	if (player->life <= 0 && status)
+	{
+		lose();
+	}	
+}
+void MapScene::resetreduce(ccTime dt){
+	isreduce = false;
+}
+
+void MapScene::update(ccTime dt)
+{
+	CCPoint vt = rocker->getDirection();
+	vt = unit(vt);
+	CCPoint herop = (player->getsprite())->getPosition();
+	CCPoint expect = ccp(herop.x - vt.x*player->v,herop.y - vt.y*player->v);
+	CCSize winSize = CCDirector::sharedDirector()->getWinSize();
+	if (expect.x < 0)
+		expect.x = 0;
+	if (expect.y < 0)
+		expect.y = 0;
+	if (expect.x > winSize.width)
+		expect.x = winSize.width;
+	if (expect.y > winSize.height)
+		expect.y = winSize.height;
+	if(expect.x >= 0 && expect.x <= winSize.width && expect.y >= 0 && expect.y <= winSize.height){
+		if((expect.x != herop.x || expect.y != herop.y) && player->getsprite()->getIsVisible() && !player->isFrozen){
+		   player->setPosition(expect);
+		 }
+	 }
+
+	CCSize size = CCDirector::sharedDirector()->getWinSize();
+	/*
+	CCPoint maplayer1p = maplayer1->getPosition();
+	CCPoint maplayer2p = maplayer2->getPosition();
+	maplayer1->setPosition(ccp(maplayer1p.x,maplayer1p.y - 5));
+	maplayer2->setPosition(ccp(maplayer2p.x,maplayer2p.y - 5));
+	if(maplayer2p.y < 0){
+	   float temp = maplayer2p.y + 512;
+	   maplayer1->setPosition(ccp(maplayer1p.x,temp));
+	}
+	if(maplayer1p.y < 0){
+	   float temp = maplayer1p.y + 512;
+	   maplayer2->setPosition(ccp(maplayer2p.x,temp));
+	}*/
+ 
+	if(!isreduce && isPmode){
+	   for(int j = 0; j < ENEMYNUM; ++j)
+	   for(int i = 0;i < enemybullets[j]->capacity();i ++){
+		  GameBullet * mybullet = (GameBullet *)(enemybullets[j]->objectAtIndex(i));
+		  if((mybullet->getsprite())->getIsVisible() && player->iscollision(mybullet)){
+			 (mybullet->getsprite())->setIsVisible(false);
+			
+			 player->life -= 1;
+			 schedule(schedule_selector(MapScene::syncLife), 0.1f);
+			
+		  }
+	   }
+	}
+	if (!isreduce)
+	{
+		for(int i = 0; i < MAX; ++i)
+		{
+			if (!avatar[i]->getsprite()->getIsVisible())
+				continue;
+			for(int j = 0; j <= 2; ++j)
+			for(int k = 0; k < bullets[j]->capacity(); ++k )
+			{ 
+				GameBullet * mybullet = (GameBullet *)(bullets[j]->objectAtIndex(k));
+				if (!mybullet->getsprite()->getIsVisible())
+					continue;
+				if (!player->getsprite()->getIsVisible())
+				{
+					mybullet->getsprite()->setIsVisible(false);
+					continue;
+				}
+				if (avatar[i]->iscollision(mybullet))
+				{
+					CCActionInterval*  action = CCRotateBy::actionWithDuration(0.05, 15);
+					CCActionInterval*  action1 = CCRotateBy::actionWithDuration(0.05, 15);
+					switch(j)
+					{
+						//判断子弹
+					case FROZEN_BULLET :if(!avatar[i]->isFrozen){avatar[i]->freeze(); 
+										if(isEffectOn)	
+											CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(ICE_FIRE)).c_str());
+											schedule(schedule_selector(MapScene::revertavatar), 2.0f);}break;
+					case NORMAL_BULLET :avatarLife -= 1;
+										if (avatarLife < 0) 
+											avatarLife = 0;  											
+											(avatar[i]->getsprite())->runAction(CCSequence::actions(action, action->reverse(), NULL)); 
+											(mybullet->getsprite())->setIsVisible(false); 
+											break;
+					case BOMB_BULLET :  avatarLife -= 5;  
+										if (avatarLife < 0)
+											avatarLife = 0;			
+										if(isEffectOn)	
+											CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(BIGBANG)).c_str());
+											(avatar[i]->getsprite())->runAction(CCSequence::actions(action1, action1->reverse(), NULL));										
+											(mybullet->getsprite())->setIsVisible(false);
+											 m_emitter->initWithFile("ExplodingRing.plist");
+											 m_emitter->setIsVisible(true);
+											 m_emitter->setPosition((avatar[i]->getsprite())->getPosition());
+											break;
+					}
+				}
+
+		}
+		}
+	}
+	if ((avatarLife <= 0 && status) || (!heartBeat && status)) //added by dhm 2012/08/25socketAlive  刚改过来的时候就可能直接错
+	{
+		status = false;
+		win();		
+	}
+	bool flag = true;
+	if (isPmode)
+	{
+
+	for (int j = 0 ; j < ENEMYNUM; ++j)
+	{
+	
+	if(enemy[j]->getState() != -1){
+	   enemy[j]->tick();
+	   if(enemy[j]->getBulletTick() == 59){
+	      CCPoint herop = (enemy[j]->getsprite())->getPosition();
+	      CCSize herosize = (enemy[j]->getsprite())->getContentSize();
+	      for(int i = 0;i < enemybullets[j]->capacity();i++){
+		     GameBullet * mybullet = (GameBullet *)(enemybullets[j]->objectAtIndex(i));
+		     if(! (mybullet->getsprite())->getIsVisible()){
+	            mybullet->setPosition(ccp(herop.x,herop.y - herosize.height));
+	            (mybullet->getsprite())->setIsVisible(true);
+			    break;
+		     }
+	      }
+	   }
+	 
+	   if(!isreduce && enemy[j]->iscollision(player)){
+		  stepindex = 0;
+		  enemy[j]->setDead();
+		  m_emitter->initWithFile("ExplodingRing.plist");
+		  m_emitter->setIsVisible(true);
+		  m_emitter->setPosition((enemy[j]->getsprite())->getPosition());
+		  player->life -= 1;
+		  schedule(schedule_selector(MapScene::syncLife), 0.1f);
+		  flag = false;
+	   }else{
+		   //判断各类子弹，目前只做到冰弹
+		  for(int k = 0;k <= 2; ++k)
+		  {
+	      for(int i = 0;i < bullets[k]->capacity();i++){
+		     GameBullet * mybullet = (GameBullet *)(bullets[k]->objectAtIndex(i));
+		     if((mybullet->getsprite())->getIsVisible() && enemy[j]->collisionwithbullet(mybullet) && (k == NORMAL_BULLET || k == BOMB_BULLET) ){
+			    enemy[j]->setDead();
+			    (mybullet->getsprite())->setIsVisible(false);
+                m_emitter->initWithFile("ExplodingRing.plist");
+			    m_emitter->setIsVisible(true);
+			    m_emitter->setPosition((enemy[j]->getsprite())->getPosition());
+			    flag = false;			   
+				break;
+		     }
+			 else if ((mybullet->getsprite())->getIsVisible() && enemy[j]->collisionwithbullet(mybullet) && (k == FROZEN_BULLET))
+			 {
+				 enemy[j]->freeze();
+				 schedule(schedule_selector(MapScene::revert), 4.0f);//冰冻2秒
+			 }
+	      }
+		  }
+	   }
+	}
+	}
+	if (!flag)
+	 schedule(schedule_selector(MapScene::enemyrestart), 3.0f);
+	}
+	for(int j = 0; j <= 2; ++j)
+	{
+	for(int i = 0;i < bullets[j]->capacity();i ++){
+		GameBullet * mybullet = (GameBullet *)(bullets[j]->objectAtIndex(i));
+		if((mybullet->getsprite())->getIsVisible()){ 
+		   mybullet->tick();
+		   if((mybullet->getsprite())->getPosition().y > size.height || (mybullet->getsprite())->getPosition().y <= 1 ||
+			   (mybullet->getsprite())->getPosition().x > size.width || (mybullet->getsprite())->getPosition().x <= 1 ){
+			  (mybullet->getsprite())->setIsVisible(false);
+		   }
+		}
+	}
+	}
+	if(isPmode)
+	{
+	for (int j = 0 ; j < ENEMYNUM; ++j)
+	for(int i = 0;i < enemybullets[j]->capacity();i ++){
+		GameBullet * mybullet = (GameBullet *)(enemybullets[j]->objectAtIndex(i));
+		if((mybullet->getsprite())->getIsVisible()){ 
+		   mybullet->tick();
+		   if((mybullet->getsprite())->getPosition().y < 0){
+			  (mybullet->getsprite())->setIsVisible(false);
+		   }
+		}
+	}
+	}
+}
+
+void MapScene::enemyrestart(ccTime dt)
+{
+	if (isPmode)
+	{
+		for (int i = 0 ; i < ENEMYNUM; ++i)
+		{
+		if (enemy[i]->getState() == -1)
+		{	enemy[i]->restart();			
+		
+		}		
+		}
+	}
+	unschedule(schedule_selector(MapScene::enemyrestart));
+}
+
+void MapScene::ccTouchesBegan(CCSet *pTouches, CCEvent *pEvent)
+{
+	CCSetIterator it = pTouches->begin();
+    CCTouch* touch = (CCTouch*)(*it);
+
+    CCPoint m_tBeginPos = touch->locationInView( touch->view() );	
+    m_tBeginPos = CCDirector::sharedDirector()->convertToGL( m_tBeginPos );
+	CCPoint herop = (player->getsprite())->getPosition();
+	CCSize herosize = (player->getsprite())->getContentSize();
+	/*if(m_tBeginPos.x > herop.x - herosize.width/2 && m_tBeginPos.x < herop.x + herosize.width/2
+		&& m_tBeginPos.y > herop.y - herosize.height/2 && m_tBeginPos.y < herop.y + herosize.height/2){
+	   stepindex = -5;
+	   xdelta = m_tBeginPos.x - herop.x;
+	   ydelta = m_tBeginPos.y - herop.y;	 
+	}*/
+	 stepindex == -4;
+	 CCPoint direct = rocker1->getDirection();
+	 //退出按键 25之内
+	 if((leaveBtn->getIsVisible()) && (nearPoint(m_tBeginPos, leaveBtn->getPosition(), 25)))
+	 {
+		 CocosDenshion::SimpleAudioEngine::sharedEngine()->stopBackgroundMusic();
+		 CCScene *pScene = StartScene::scene();
+		 CCDirector::sharedDirector()->replaceScene(pScene);
+		 return ;
+	 }
+	 if (vectorLength(direct) > 0.01f)
+		{
+		 float angle = 0 ;	
+		direct.x -= 2 * direct.x;
+		direct.y -= 2 * direct.y;
+		angle = atan2(direct.y, direct.x);
+			if (angle >= -0.001f)
+			{
+				angle = 360 - 180 * (angle / PI);
+			}
+			else
+			{
+				angle = (-1)  * 180 * (angle / PI);
+			}
+			if (fabs(player->pAngle - angle) > 3)
+			{
+				player->pAngle = angle;
+				//if (player->pAngle - angle < -180 )
+				//	player->getsprite()->runAction(CCRotateBy::actionWithDuration(0.1,-1 * (360 -fabs(player->pAngle - angle))));
+				//else
+				player->getsprite()->runAction(CCRotateTo::actionWithDuration(0.1,angle));
+				
+			}
+	 }
+	  for (int i = 1; i <=3; ++i)
+	 {
+		 if (nearPoint(m_tBeginPos,ccp(665 + 50*(i-1), 455), 25) && (i-1 != weaponType))
+		 {
+			 for (int j = 1; j <= 3; ++j)
+			 {
+				 weapon[j]->stopAllActions();
+				 weapon[j]->setIsVisible(true);
+			 }
+			weaponType = i-1;
+			CCActionInterval*  action = CCBlink::actionWithDuration(5000, 10000);
+			weapon[i]->runAction(action);
+			break;
+		 }
+	 }
+	  if (nearPoint(m_tBeginPos,rocket->getPosition(), 25) && (rocket->getIsVisible()))
+	  {
+		  rocket->setIsVisible(false);
+		  player->v *= 2;
+		  player->getsprite()->initWithFile("playerfaster.png");
+		  schedule(schedule_selector(MapScene::resetRocket), 10.0f);
+		  schedule(schedule_selector(MapScene::resetPlayer), 2.0f);
+	  }
+	  if (nearPoint(m_tBeginPos, serverLite->getPosition(),25) && serverLite->getIsVisible())
+	  {
+		  serverLite->setIsVisible(false);
+		  clientLite->setIsVisible(false);
+		 // startServer();
+	  }
+	  if(nearPoint(m_tBeginPos, clientLite->getPosition(),25) && clientLite->getIsVisible())
+	  {
+		  clientLite->setIsVisible(false);
+		  serverLite->setIsVisible(false);
+		//  startClient();
+	  }
+	  if (m_tBeginPos.x > 500 && m_tBeginPos.y < 180 && player->getsprite()->getIsVisible())
+	 {		
+		schedule(schedule_selector(MapScene::resettouch), 0.1f);
+	 }
+	
+	 
+}
+
+void MapScene::ccTouchesMoved(CCSet *pTouches, CCEvent *pEvent)
+{
+	CCSetIterator it = pTouches->begin();
+    CCTouch* touch = (CCTouch*)(*it);
+
+    CCPoint m_tBeginPos = touch->locationInView( touch->view() );	
+    m_tBeginPos = CCDirector::sharedDirector()->convertToGL( m_tBeginPos );
+
+		float angle = 0 ;
+		CCPoint direct = rocker1->getDirection();
+		if (vectorLength(direct) > 0.01f)
+		{
+		direct.x -= 2 * direct.x;
+		direct.y -= 2 * direct.y;
+		angle = atan2(direct.y, direct.x);
+			if (angle >= -0.001f)
+			{
+				angle = 360 - 180 * (angle / PI);
+			}
+			else
+			{
+				angle = (-1)  * 180 * (angle / PI);
+			}
+		
+			if (fabs(player->pAngle - angle) > 3)
+			{
+					
+				player->getsprite()->setRotation(angle);
+				player->pAngle = angle;	
+					
+			}
+
+		}
+}
+
+void MapScene::ccTouchesEnded(CCSet *pTouches, CCEvent *pEvent)
+{
+	//if(stepindex == -5){
+	stepindex == -1;
+	CCSetIterator it = pTouches->begin();
+    CCTouch* touch = (CCTouch*)(*it);
+	CCPoint m_tBeginPos = touch->locationInView( touch->view() );	
+    m_tBeginPos = CCDirector::sharedDirector()->convertToGL( m_tBeginPos );
+	if ( m_tBeginPos.x > 500 && m_tBeginPos.y < 180 )
+	 {
+	   unschedule(schedule_selector(MapScene::resettouch));
+	 }
+	   // stepindex = -1;
+	//}
+}
+
+void MapScene::resettouch(ccTime dt){
+	  if(player->isFrozen)
+		  return;
+	  CCPoint herop = (player->getsprite())->getPosition();
+	  CCSize herosize = (player->getsprite())->getContentSize();
+	  for(int i = 0;i < bullets[weaponType]->capacity();i ++){
+		 GameBullet * mybullet = (GameBullet *)(bullets[weaponType]->objectAtIndex(i));
+		  if(! (mybullet->getsprite())->getIsVisible()){
+			  mybullet->setPosition(ccp(herop.x + herosize.height * cos( player->pAngle * PI / 180.0) ,herop.y - herosize.height * sin( player->pAngle * PI / 180.0)));
+			  mybullet->vAngle = player->pAngle;
+			  mybullet->getsprite()->setRotation(mybullet->vAngle);
+	          (mybullet->getsprite())->setIsVisible(true);
+			   if(isEffectOn)	
+				{
+					if (weaponType ==  NORMAL_BULLET)
+						CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(BULLET_FIRE)).c_str());
+					if (weaponType ==  BOMB_BULLET)
+						CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(BOMB_FIRE)).c_str());
+					if (weaponType ==  FROZEN_BULLET)
+						CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(ICE_FIRE)).c_str());
+					
+				}
+			  break;
+		  }
+	   }
+	 
+}
+
+void MapScene::resetRocket(ccTime dt)
+{
+	rocket->setIsVisible(true);
+	unschedule(schedule_selector(MapScene::resetRocket));
+}
+
+void MapScene::resetPlayer(ccTime dt)
+{
+	player->v /= 2;
+	player->setType(player->type);
+	unschedule(schedule_selector(MapScene::resetPlayer));
+}
+//added by dhm 2012/08/10
+bool nearPoint(CCPoint start, CCPoint end, float len)
+{
+	if (fabs(end.x - start.x) > len)
+		return false;
+	if (fabs(end.y - start.y) > len)
+		return false;
+	return true;
+}
+void MapScene::revert(ccTime dt)
+{
+	for (int j = 0 ; j < ENEMYNUM; ++j)
+	{
+		if (enemy[j]->isFrozen)
+		{
+			enemy[j]->revert();
+		}
+	}
+	if(isEffectOn)	
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(RELEASE_FIRE)).c_str());
+	unschedule(schedule_selector(MapScene::revert));
+}
+void MapScene::revertavatar(ccTime dt)
+{
+	for (int j = 0 ; j < MAX; ++j)
+	{
+		if (avatar[j]->isFrozen)
+		{
+			avatar[j]->revert();
+		}
+	}
+	unschedule(schedule_selector(MapScene::revertavatar));
+}
+
+void MapScene::freezeplayer(ccTime dt)
+{
+	player->freeze();
+	if(isEffectOn)	
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(ICE_FIRE)).c_str());
+	unschedule(schedule_selector(MapScene::freezeplayer));
+}
+void MapScene::revertplayer(ccTime dt)
+{
+	player->revert();
+	if(isEffectOn)	
+	CocosDenshion::SimpleAudioEngine::sharedEngine()->playEffect(std::string(CCFileUtils::fullPathFromRelativePath(RELEASE_FIRE)).c_str());
+	unschedule(schedule_selector(MapScene::revertplayer));
+}
+struct FuncPointer{
+	MapScene * classPointer;
+	void (* func)();
+};
+
+void* _thread_s_r(void* param)
+{
+    MapScene* _this = (MapScene*)param;
+    _this->serverR();
+    return NULL;
+}
+void* _thread_s_w(void* param)
+{
+    MapScene* _this = (MapScene*)param;
+    _this->serverW();
+    return NULL;
+}
+void* _thread_c_r(void* param)
+{
+    MapScene* _this = (MapScene*)param;
+    _this->clientR();
+    return NULL;
+}
+void* _thread_c_w(void* param)
+{
+    MapScene* _this = (MapScene*)param;
+    _this->clientW();
+    return NULL;
+}
+double dis(CCPoint a , CCPoint b)
+{
+	return sqrt((a.x-b.x )*(a.x-b.x ) + (a.y-b.y)*(a.y-b.y));
+}
+int getIntFromStr(char * start, int len)
+{
+	char t_buf[100];
+	for (int i = 0 ; i < len; ++i)
+	{
+		t_buf[i] = *(start+i);
+	}
+	t_buf[len] = '\0';
+	return atoi(t_buf);
+}
+CCPoint unit(CCPoint vt)
+{
+	vt.x /= sqrt(vt.x*vt.x+vt.y*vt.y);
+	vt.y /= sqrt(vt.x*vt.x+vt.y*vt.y);
+	return vt;
+}
+float  vectorLength(CCPoint vt)
+{
+	return sqrt(vt.x*vt.x+vt.y*vt.y);
+}
+void MapScene::receive()
+{	
+}
+void MapScene::send()
+{
+}
+void MapScene::clientR()
+{
+	ODSocket cSocketR;
+	cSocketR.Init();
+	cSocketR.Create(AF_INET,SOCK_STREAM,0);
+	while(!cSocketR.Connect(ip.c_str(),portW))
+	{
+		#ifdef WIN32
+			Sleep(1000);
+		#else
+			usleep(1000 * 1000);
+		#endif
+	} //因为是client 所以用的是portR;
+	char buf[BLOCK_SIZE];
+	for (;;)
+	{
+		if (!start)
+			return ;
+	
+		int len = cSocketR.Recv(buf,BLOCK_SIZE ,0);
+		if (len <= 0 )
+		{
+			heartBeat = false;
+			break;	
+		}
+		if (!status)
+			break;
+		int pAngle;
+		int x; 
+		int y;
+		int avatarId;		
+		int type = 0;
+		int number;
+		bool flag[MAX][4][20];
+		int t_life = 0;
+		int state = 0;
+		avatarId = getIntFromStr(buf, 1);
+		state = getIntFromStr(buf+1, 1);
+		t_life = getIntFromStr(buf+2, 2);
+		pAngle = getIntFromStr(buf+4, 4);
+		x = getIntFromStr(buf+8, 4);
+		y = getIntFromStr(buf+12, 4);
+		avatar[avatarId]->pAngle = pAngle;
+		avatar[avatarId]->getsprite()->setRotation(pAngle);
+		avatar[avatarId]->getsprite()->setPosition(ccp(x,y));
+		if (!avatar[avatarId]->getsprite()->getIsVisible() && status)
+			avatar[avatarId]->getsprite()->setIsVisible(true);
+		len = 16;
+		if (state == 1 && !player->isFrozen)
+		{
+			player->isFrozen = true;
+			schedule(schedule_selector(MapScene::freezeplayer), 0.1f);
+			schedule(schedule_selector(MapScene::revertplayer), 2.0f);
+		}
+		if (t_life < player->life)
+		{
+			
+			if (player->life == t_life + 5)
+			{
+				schedule(schedule_selector(MapScene::attackByBomb),0.1f);
+			}
+			reduceLife(t_life);	
+			player->life = t_life;
+			schedule(schedule_selector(MapScene::syncLife), 0.1f);
+		}
+		for (int i = 0 ; i < MAX ; ++i)
+			for (int j = 0 ; j <= 2; ++j)
+				for (int k = 0 ; k < avatarBullets[i][j]->capacity(); ++k)
+					flag[i][j][k] = false;
+
+
+		while(1)
+		{
+			type = getIntFromStr(buf+len, 1);
+			if (type == 9)
+				break;
+			len += 1;
+			number = getIntFromStr(buf+len, 2);
+			len += 2;
+			pAngle = getIntFromStr(buf+len, 4);
+			len += 4;
+			x = getIntFromStr(buf+len, 4);
+			len += 4;
+			y = getIntFromStr(buf+len, 4);
+			len += 4;
+			GameBullet * mybullet = (GameBullet *)(avatarBullets[avatarId][type]->objectAtIndex(number));
+			mybullet->vAngle = pAngle;
+			mybullet->getsprite()->setRotation(pAngle);
+			mybullet->getsprite()->setPosition(ccp(x,y));
+			if (!mybullet->getsprite()->getIsVisible())
+				mybullet->getsprite()->setIsVisible(true);
+			flag[avatarId][type][number] = true;
+	    }
+		for (int i = 0 ; i < MAX ; ++i)
+			for (int j = 0 ; j <= 2; ++j)
+				for (int k = 0 ; k < avatarBullets[i][j]->capacity(); ++k)
+				{
+					if (!flag[i][j][k])
+					{
+						((GameBullet *)(avatarBullets[i][j]->objectAtIndex(k)))->getsprite()->setIsVisible(false);
+					}
+				}
+		if (t_life ==  0)
+			break;
+	}
+	cSocketR.Close();
+	cSocketR.Clean();
+}
+void MapScene::clientW()
+{
+	ODSocket cSocketW;
+	cSocketW.Init();
+	cSocketW.Create(AF_INET,SOCK_STREAM,0);
+	while(!cSocketW.Connect(ip.c_str(),portR))
+	{
+		#ifdef WIN32
+			Sleep(1000);
+		#else
+			usleep(1000 * 1000);
+		#endif
+	}
+	; //因为是client 所以用的是portR;
+	char buf[BLOCK_SIZE];
+	sprintf(buf,"%1d",id);
+	int aid  = -1;
+	int state = 0;
+	
+	while(1)
+	{
+		if (!start) 
+			break;
+		for(int i = 0 ; i < MAX;++i)
+		{
+			if (avatar[i]->getsprite()->getIsVisible())
+			{
+				aid = i;
+				break;
+			}
+		}
+		state = 0;
+		if(avatar[aid]->isFrozen)
+		{
+			state = 1;
+		}
+		sprintf(buf+1,"%1d",state);
+		sprintf(buf+2,"%2d",avatarLife);
+		CCPoint herop = (player->getsprite())->getPosition();
+		int dy = herop.y;
+		int dx = herop.x;
+		int angle = (int)player->pAngle;
+		sprintf(buf+4, "%4d", angle);
+		sprintf(buf+8, "%4d", dx);
+		sprintf(buf+12, "%4d", dy);
+		int len = 16;
+		for (int i = 0; i <= 2; ++i)
+			for (int j = 0; j < bullets[i]->capacity();++j)
+			{
+				GameBullet * mybullet = (GameBullet *)(bullets[i]->objectAtIndex(j));
+				if (mybullet->getsprite()->getIsVisible())
+				{
+					CCPoint p = (mybullet->getsprite()->getPosition());
+					sprintf(buf+len, "%1d", (int)i);
+					len += 1;
+					sprintf(buf+len, "%2d", (int)j);
+					len += 2;
+					sprintf(buf+len, "%4d", (int)mybullet->vAngle);
+					len += 4;
+					sprintf(buf+len, "%4d", (int)p.x);
+					len += 4;
+					sprintf(buf+len, "%4d", (int)p.y);
+					len += 4;
+				}
+			}
+		buf[len] = '9';
+		//if (demo > 3 || temp != 0)
+		//{
+			if (cSocketW.Send(buf, BLOCK_SIZE ,0)== -1)
+			break;
+		
+	//	}
+		#ifdef WIN32
+			Sleep(30);
+		#else
+			usleep(30 * 1000);
+		#endif
+	}
+	cSocketW.Close();
+	cSocketW.Clean();
+}
+void MapScene::serverR()
+{
+
+	ODSocket clientsocket;
+	mysocketR.Init();
+	mysocketR.Create(AF_INET,SOCK_STREAM,0);
+	mysocketR.Bind(portR);
+	mysocketR.Listen();
+	char ipClient[64];
+   	while(!mysocketR.Accept(clientsocket,ipClient))
+	{
+		#ifdef WIN32
+			Sleep(1000);
+		#else
+			usleep(1000 * 1000);
+		#endif
+	}
+	int pAngle;
+	int x; 
+	int y;
+	int avatarId;
+	int type = 0;
+	int number;
+	bool flag[MAX][4][20];
+	int state = 0;
+	int t_life = 0;
+	char buf[BLOCK_SIZE];
+	for (;;)
+	{
+		if (!start)
+			return ;
+	   	int len = clientsocket.Recv(buf,BLOCK_SIZE ,0);
+		if (len <= 0 )
+		{
+			heartBeat = false;
+			break;	
+		}
+		if (!status)
+			break;
+		avatarId = getIntFromStr(buf, 1);
+		state = getIntFromStr(buf+1, 1);
+		t_life = getIntFromStr(buf+2, 2);
+		pAngle = getIntFromStr(buf+4, 4);
+		x = getIntFromStr(buf+8, 4);
+		y = getIntFromStr(buf+12, 4);
+		avatar[avatarId]->pAngle = pAngle;
+		avatar[avatarId]->getsprite()->setRotation(pAngle);
+		avatar[avatarId]->getsprite()->setPosition(ccp(x,y));
+		if (!avatar[avatarId]->getsprite()->getIsVisible() && status)
+			avatar[avatarId]->getsprite()->setIsVisible(true);
+		len = 16;
+		if (state == 1 && !player->isFrozen)
+		{
+			player->isFrozen = true;
+			schedule(schedule_selector(MapScene::freezeplayer), 0.1f);
+			schedule(schedule_selector(MapScene::revertplayer), 2.0f);
+		}
+		if (t_life < player->life)
+		{
+			if (player->life == t_life + 5)
+			{
+				schedule(schedule_selector(MapScene::attackByBomb),0.1f);
+			}
+			reduceLife(t_life);
+			player->life = t_life;
+			schedule(schedule_selector(MapScene::syncLife), 0.1f);
+		}
+
+		for (int i = 0 ; i < MAX ; ++i)
+			for (int j = 0 ; j <= 2; ++j)
+				for (int k = 0 ; k < avatarBullets[i][j]->capacity(); ++k)
+					flag[i][j][k] = false;
+
+
+		while(1)
+		{
+			type = getIntFromStr(buf+len, 1);
+			if (type == 9)
+				break;
+			len += 1;
+			number = getIntFromStr(buf+len, 2);
+			len += 2;
+			pAngle = getIntFromStr(buf+len, 4);
+			len += 4;
+			x = getIntFromStr(buf+len, 4);
+			len += 4;
+			y = getIntFromStr(buf+len, 4);
+			len += 4;
+			GameBullet * mybullet = (GameBullet *)(avatarBullets[avatarId][type]->objectAtIndex(number));
+			mybullet->vAngle = pAngle;
+			mybullet->getsprite()->setRotation(pAngle);
+			mybullet->getsprite()->setPosition(ccp(x,y));
+			if (!mybullet->getsprite()->getIsVisible())
+				mybullet->getsprite()->setIsVisible(true);
+			flag[avatarId][type][number] = true;
+	    }
+		for (int i = 0 ; i < MAX ; ++i)
+			for (int j = 0 ; j <= 2; ++j)
+				for (int k = 0 ; k < avatarBullets[i][j]->capacity(); ++k)
+				{
+					if (!flag[i][j][k])
+					{
+						((GameBullet *)(avatarBullets[i][j]->objectAtIndex(k)))->getsprite()->setIsVisible(false);
+					}
+				}
+				//接收
+		/* #ifdef WIN32
+			Sleep(10);
+		 #else
+			usleep(10 * 1000);
+		 #endif*/
+		if (player->life <= 0)
+			break;
+	
+	}
+	
+	mysocketR.Close();
+	mysocketR.Clean();
+}
+void MapScene::serverW()
+{
+	ODSocket cSocket;
+	mysocketW.Init();
+	mysocketW.Create(AF_INET,SOCK_STREAM,0);
+	mysocketW.Bind(portW);
+	mysocketW.Listen();
+	char ipClient[64];
+	while(!mysocketW.Accept(cSocket,ipClient))
+	{
+		#ifdef WIN32
+			Sleep(1000);
+		#else
+			usleep(1000 * 1000);
+		#endif
+	}
+	char buf[BLOCK_SIZE];
+	sprintf(buf,"%1d",id);
+	int aid  = -1;
+	int state = 0;
+	while(1)
+	{
+		if (!start) 
+			break;
+		for(int i = 0 ; i < MAX;++i)
+		{
+			if (avatar[i]->getsprite()->getIsVisible())
+			{
+				aid = i;
+				break;
+			}
+		}
+		state = 0;
+		if(avatar[aid]->isFrozen)
+		{
+			state = 1;
+		}
+		sprintf(buf+1,"%1d",state);
+		sprintf(buf+2,"%2d",avatarLife);
+		CCPoint herop = (player->getsprite())->getPosition();
+		int dy = herop.y;
+		int dx = herop.x;
+		int angle = (int)player->pAngle;
+		sprintf(buf+4, "%4d", angle);
+		sprintf(buf+8, "%4d", dx);
+		sprintf(buf+12, "%4d", dy);
+		int len = 16;
+		for (int i = 0; i <= 2; ++i)
+			for (int j = 0; j < bullets[i]->capacity();++j)
+			{
+				GameBullet * mybullet = (GameBullet *)(bullets[i]->objectAtIndex(j));
+				if (mybullet->getsprite()->getIsVisible())
+				{
+					CCPoint p = (mybullet->getsprite()->getPosition());
+					sprintf(buf+len, "%1d", (int)i);
+					len += 1;
+					sprintf(buf+len, "%2d", (int)j);
+					len += 2;
+					sprintf(buf+len, "%4d", (int)mybullet->vAngle);
+					len += 4;
+					sprintf(buf+len, "%4d", (int)p.x);
+					len += 4;
+					sprintf(buf+len, "%4d", (int)p.y);
+					len += 4;
+				}
+			}
+		buf[len] = '9';
+		if (cSocket.Send(buf, BLOCK_SIZE ,0)== -1)
+			break;
+		#ifdef WIN32
+			Sleep(30);
+		#else
+			usleep(30 * 1000);
+		#endif
+	}
+	mysocketW.Close();
+	mysocketW.Clean();
+}
+void MapScene::startServer()
+{
+	start = true;
+	pthread_t tid, tid1;
+	player->setType(0);
+	for (int i = 0; i < MAX; ++i)
+		avatar[i]->setType(1);
+	player->getsprite()->setPosition(ccp(100,300));
+	pthread_create(&tid, NULL, _thread_s_r , this);
+	pthread_create(&tid1, NULL, _thread_s_w , this);
+}
+void MapScene::startClient(std::string hostip)
+{
+	start = true;
+	pthread_t tid, tid1;
+	player->pAngle = 180;
+	player->getsprite()->setRotation(180);
+	player->setType(1);
+	for (int i = 0; i < MAX; ++i)
+		avatar[i]->setType(0);
+	player->getsprite()->setPosition(ccp(700,300));	
+	pthread_create(&tid, NULL, _thread_c_r , this);
+	pthread_create(&tid1, NULL, _thread_c_w , this);
+	ip = hostip;
+}
+void MapScene::keyBackClicked()
+{
+	 CCLog("Android- KeyBackClicked!");
+	start = false;
+	if (cSocketR != INVALID_SOCKET)
+	{
+		cSocketR.Close();
+		cSocketR.Clean();
+	}
+	if (cSocketW != INVALID_SOCKET)
+	{
+		cSocketW.Close();
+		cSocketW.Clean();
+	}
+	if (mysocketR != INVALID_SOCKET)
+	{
+		mysocketR.Close();
+		mysocketR.Clean();
+	}
+	if (mysocketW != INVALID_SOCKET)
+	{
+		mysocketW.Close();
+		mysocketW.Clean();
+	}
+	CCDirector::sharedDirector()->end();}
+void MapScene::keyMenuClicked()
+{
+	start = false;
+	CCLog("Android- KeyMenuClicked!");
+	if (cSocketR != INVALID_SOCKET)
+	{
+		cSocketR.Close();
+		cSocketR.Clean();
+	}
+	if (cSocketW != INVALID_SOCKET)
+	{
+		cSocketW.Close();
+		cSocketW.Clean();
+	}
+	if (mysocketR != INVALID_SOCKET)
+	{
+		mysocketR.Close();
+		mysocketR.Clean();
+	}
+	if (mysocketW != INVALID_SOCKET)
+	{
+		mysocketW.Close();
+		mysocketW.Clean();
+	}
+	CCDirector::sharedDirector()->end();
+}
+void MapScene::startPractice()
+{
+	/*for(int i = 0 ; i < 3; ++i)
+	{
+		avatarLife = 40000;
+		avatar[i]->getsprite()->initWithFile("gplayer.png");
+		avatar[i]->pAngle = rand()%360;
+		avatar[i]->getsprite()->setRotation(avatar[i]->pAngle);
+		avatar[i]->getsprite()->setPosition(ccp(120 + rand()% 500, 50 + rand () % 400));
+		avatar[i]->getsprite()->setIsVisible(true);
+	}*/
+	isPmode = true;
+	player->getsprite()->setPosition(ccp(400,100));
+	player->getsprite()->setRotation(270);
+	player->setType(0);
+	for (int i = 0 ; i < ENEMYNUM; ++i)
+		enemy[i] = new GameEnemy("gplayer.png");
+	for (int i = 0 ; i < ENEMYNUM; ++i)
+	this->addChild((enemy[i]->getsprite()), 2,100+i);
+	for (int j = 0 ; j < ENEMYNUM; ++j)
+	{
+	enemybullets[j] = CCArray::arrayWithCapacity(40);
+	for(int i = 0;i < enemybullets[j]->capacity();i ++){
+	   GameBullet * mybullet = new GameBullet(NORMAL_BULLET);
+	   (mybullet->getsprite())->setIsVisible(false);
+	   mybullet->vAngle = 90;
+	   mybullet->getsprite()->setRotation(90);
+	   this->addChild((mybullet->getsprite()), 403 + i);
+	   enemybullets[j]->addObject(mybullet);
+	}
+	enemybullets[j]->retain();
+	}
+	leaveBtn->setPosition(ccp(400,50));
+	leaveBtn->setIsVisible(true);
+}
+/*std::string getIPs()
+{
+	std::string r_value;
+	r_value = "127.0.0.1";
+	#ifdef WIN32
+	char host[255];
+	if (gethostname(host, sizeof(host)) == SOCKET_ERROR)
+	{
+		
+	}
+	struct hostent *p = gethostbyname(host);
+	if (p == NULL)
+	{
+	}
+	else
+	{
+		for (int i = 0; p->h_addr_list[i] != 0; i++)
+		{
+			struct in_addr in;
+			memcpy(&in, p->h_addr_list[i], sizeof(struct in_addr));
+			r_value = inet_ntoa(in);
+			if (r_value.find("211.69") != -1)
+			{
+				break;
+				//return r_value.substr(0,r_value.find_last_of('.'));
+			}
+		}
+	}
+	ODSocket sockets[300];
+	std::string ipHead = r_value.substr(0,r_value.find_last_of('.'));
+	std::string ip;
+	char t_ip[15];
+	for (int i = 1; i <= 254; ++i)
+	{
+		itoa(i, t_ip, 10);
+		ip = ipHead + "." + t_ip;
+		sockets[i].Init();
+		sockets[i].Create(AF_INET, SOCK_STREAM, 0);
+		int error = -1;
+		timeval tm;
+		fd_set set;
+		unsigned long ul = 1;
+	//	ioctl(sockets[i].m_sock, FIONBIO, &ul);
+
+
+	}
+	#else		
+	#endif
+}*/
+//接收的时候判断心跳。
